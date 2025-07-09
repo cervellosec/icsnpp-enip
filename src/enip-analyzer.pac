@@ -13,25 +13,104 @@
 %}
 %header{
 
+    // CIP Segment type constants
+    #define CI_SEGMENT_TYPE_MASK        0xE0
+    #define CI_LOGICAL_SEGMENT          0x20
+    #define CI_DATA_SEGMENT             0x80
+    
+    // CIP Logical segment constants
+    #define CI_LOGICAL_SEG_TYPE_MASK    0x1C
+    #define CI_LOGICAL_SEG_CLASS_ID     0x00
+    #define CI_LOGICAL_SEG_INST_ID      0x04
+    #define CI_LOGICAL_SEG_ATTR_ID      0x10
+    
+    // CIP Data segment constants
+    #define CI_DATA_SEG_TYPE_MASK       0x1F
+    #define CI_DATA_SEG_SIMPLE          0x00
+    #define CI_DATA_SEG_SYMBOL          0x11
+
+    enum CIP_Segment_Type {
+        CIP_SEGMENT_LOGICAL = 0,
+        CIP_SEGMENT_DATA = 1,
+        CIP_SEGMENT_UNKNOWN = 2
+    };
+
     typedef struct CIP_Request_Path {
-        uint32 class_id, instance_id, attribute_id;
+        CIP_Segment_Type segment_type;
+        
+        // Logical segment fields
+        uint32 class_id;
+        uint32 instance_id;
+        uint32 attribute_id;
+        
+        // Data segment fields
+        uint8 data_type;
+        uint32 data_size;
+        bool has_simple_data;
+        bool has_symbol_data;
+        const_bytestring symbol_name_data;
+        const_bytestring simple_binary_data;
 
         CIP_Request_Path(){
+            segment_type = CIP_SEGMENT_UNKNOWN;
             class_id = UINT32_MAX;
             instance_id = UINT32_MAX;
             attribute_id = UINT32_MAX;
+            data_type = 0;
+            data_size = 0;
+            has_simple_data = false;
+            has_symbol_data = false;
+            symbol_name_data = const_bytestring();
+            simple_binary_data = const_bytestring();
         }
 
-    }CIP_Request_Path;
+        // Getters for logical segment fields
+        uint32 get_class_id() const { 
+            return (segment_type == CIP_SEGMENT_LOGICAL) ? class_id : UINT32_MAX; 
+        }
+        uint32 get_instance_id() const { 
+            return (segment_type == CIP_SEGMENT_LOGICAL) ? instance_id : UINT32_MAX; 
+        }
+        uint32 get_attribute_id() const { 
+            return (segment_type == CIP_SEGMENT_LOGICAL) ? attribute_id : UINT32_MAX; 
+        }
 
+        // Getters for data segment fields
+        uint8 get_data_type() const {
+            return (segment_type == CIP_SEGMENT_DATA) ? data_type : 0;
+        }
+        uint32 get_data_size() const {
+            return (segment_type == CIP_SEGMENT_DATA) ? data_size : 0;
+        }
+        const_bytestring get_simple_binary_data() const {
+            return (segment_type == CIP_SEGMENT_DATA) ? simple_binary_data : const_bytestring();
+        }
+        const_bytestring get_symbol_name_data() const {
+            return (segment_type == CIP_SEGMENT_DATA) ? symbol_name_data : const_bytestring();
+        }
+
+    } CIP_Request_Path;
+
+    // Helper function to extract substring from const_bytestring
+    const_bytestring extract_substring(const_bytestring& source, int start, int length);
 
     uint32 get_unsigned(const_bytestring data);
-    uint32 get_number(uint8 size, uint8 x, const_bytestring data);
+    uint32 get_number(uint8 size, uint16 x, const_bytestring data);
+    bool parse_cip_segment(const_bytestring data, uint16& x, uint16 data_length, CIP_Request_Path& request_path);
     CIP_Request_Path parse_request_path(const_bytestring data);
     CIP_Request_Path parse_request_multiple_service_packet(const_bytestring data, uint16 starting_location);
 %}
 
 %code{
+
+    // Helper function to extract substring from const_bytestring
+    const_bytestring extract_substring(const_bytestring& source, int start, int length) {
+        if (start >= source.length() || length <= 0) {
+            return const_bytestring();
+        }
+        int actual_length = (start + length > source.length()) ? (source.length() - start) : length;
+        return const_bytestring(source.begin() + start, actual_length);
+    }
 
     // Get uint32 number from status_extended array
     uint32 get_unsigned(const_bytestring data)
@@ -64,6 +143,109 @@
         return UINT32_MAX;
     }
 
+    // Common CIP segment parsing logic
+    bool parse_cip_segment(const_bytestring data, uint16& x, uint16 data_length, CIP_Request_Path& request_path)
+    {
+        uint8 segment_type = data[x];
+        uint8 segment_mask = segment_type & CI_SEGMENT_TYPE_MASK;
+        
+        if (segment_mask == CI_LOGICAL_SEGMENT)
+        {
+            request_path.segment_type = CIP_SEGMENT_LOGICAL;
+            
+            uint16 choice = (data[x] & CI_LOGICAL_SEG_TYPE_MASK) >> 2;
+            uint16 size = data[x] & 3;
+            x += 1;
+            if(size > 0)
+                x += 1;
+
+            if(choice == 0)
+                request_path.class_id = get_number(size, x, data);
+            else if(choice == 1)
+                request_path.instance_id = get_number(size, x, data);
+            else if(choice == 4)
+                request_path.attribute_id = get_number(size, x, data);
+
+            if(size == 0)
+                x += 1;
+            else if(size == 1)
+                x += 2;
+            else
+                x += 4;
+                
+            return true;
+        }
+        else if (segment_mask == CI_DATA_SEGMENT)
+        {
+            request_path.segment_type = CIP_SEGMENT_DATA;
+            
+            uint8 data_seg_type = segment_type & CI_DATA_SEG_TYPE_MASK;
+            request_path.data_type = data_seg_type;
+            
+            if (data_seg_type == CI_DATA_SEG_SIMPLE)
+            {
+                request_path.has_simple_data = true;
+                
+                // Simple data segment format: [segment_type][size][data...]
+                if ((x + 1) < data_length)
+                {
+                    uint8 seg_size = data[x + 1];
+                    request_path.data_size = seg_size * 2;  // Size is in words
+                    
+                    // Store the binary data
+                    if (seg_size > 0 && (x + 2 + (seg_size * 2)) <= data_length)
+                    {
+                        request_path.simple_binary_data = extract_substring(data, x + 2, seg_size * 2);
+                    }
+                    
+                    x += 2 + (seg_size * 2);  // Skip segment type, size, and data
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            else if (data_seg_type == CI_DATA_SEG_SYMBOL)
+            {
+                request_path.has_symbol_data = true;
+                
+                // Symbol data segment format: [segment_type][size][symbol_data...]
+                if ((x + 1) < data_length)
+                {
+                    uint8 seg_size = data[x + 1];
+                    request_path.data_size = seg_size;
+                    
+                    // Store symbol name as bytestring
+                    if (seg_size > 0 && (x + 2 + seg_size) <= data_length)
+                    {
+                        request_path.symbol_name_data = extract_substring(data, x + 2, seg_size);
+                    }
+                    
+                    x += 2 + seg_size;
+                    
+                    // Check for pad byte (symbols are padded to even length)
+                    if (seg_size % 2)
+                        x += 1;
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                // Unknown data segment type, return for safer results
+                return false;
+            }
+            
+            return true;
+        }
+        else
+        {
+            return false;
+        }
+    }
+
     // Parse request path and return CIP_Request_Path struct
     CIP_Request_Path parse_request_path(const_bytestring data)
     {
@@ -74,29 +256,7 @@
 
         while( (x+1) < data_length )
         {
-            if ((data[x] >> 5) == 1)
-            {
-                uint16 choice = (data[x] & 0x1c) >> 2;
-                uint16 size = data[x] & 3;
-                x += 1;
-                if(size > 0)
-                    x += 1;
-
-                if(choice == 0)
-                    request_path.class_id = get_number(size, x, data);
-                else if(choice == 1)
-                    request_path.instance_id = get_number(size, x, data);
-                else if(choice == 4)
-                    request_path.attribute_id = get_number(size, x, data);
-
-                if(size == 0)
-                    x += 1;
-                else if(size == 1)
-                    x += 2;
-                else
-                    x += 4;
-            }
-            else
+            if (!parse_cip_segment(data, x, data_length, request_path))
             {
                 return request_path;
             }
@@ -115,33 +275,10 @@
 
         while( (x + 1) < data_length )
         {
-            if ((data[x] >> 5) == 1)
-            {
-                uint16 choice = (data[x] & 0x1c) >> 2;
-                uint16 size = data[x] & 3;
-                x += 1;
-                if(size > 0)
-                    x += 1;
-
-                if(choice == 0)
-                    request_path.class_id = get_number(size, x, data);
-                else if(choice == 1)
-                    request_path.instance_id = get_number(size, x, data);
-                else if(choice == 4)
-                    request_path.attribute_id = get_number(size, x, data);
-
-                if(size == 0)
-                    x += 1;
-                else if(size == 1)
-                    x += 2;
-                else
-                    x += 4;
-            }
-            else
+            if (!parse_cip_segment(data, x, data_length, request_path))
             {
                 return request_path;
             }
-
         }
         return request_path;
     }
@@ -206,9 +343,12 @@ refine flow ENIP_Flow += {
                                                    (${cip_header.request_or_response} == 1),
                                                    status,
                                                    status_extended,
-                                                   request_path.class_id,
-                                                   request_path.instance_id,
-                                                   request_path.attribute_id);
+                                                   request_path.get_class_id(),
+                                                   request_path.get_instance_id(),
+                                                   request_path.get_attribute_id(),
+                                                   to_stringval(request_path.get_simple_binary_data()),
+                                                   to_stringval(request_path.get_symbol_name_data()),
+                                                   to_stringval(${cip_header.other}));
             }
             return true;
         %}
@@ -511,9 +651,12 @@ refine flow ENIP_Flow += {
                                                    false,
                                                    UINT32_MAX,
                                                    UINT32_MAX,
-                                                   request_path.class_id,
-                                                   request_path.instance_id,
-                                                   request_path.attribute_id);
+                                                   request_path.get_class_id(),
+                                                   request_path.get_instance_id(),
+                                                   request_path.get_attribute_id(),
+                                                   to_stringval(request_path.get_simple_binary_data()),
+                                                   to_stringval(request_path.get_symbol_name_data()),
+                                                   zeek::make_intrusive<zeek::StringVal>(""));
 
                 // CIP Header event for each service within multiple service packet
                 for(uint8 i=0; i < service_count;i++)
@@ -530,9 +673,12 @@ refine flow ENIP_Flow += {
                                                        false,
                                                        UINT32_MAX,
                                                        UINT32_MAX,
-                                                       request_path.class_id,
-                                                       request_path.instance_id,
-                                                       request_path.attribute_id);
+                                                       request_path.get_class_id(),
+                                                       request_path.get_instance_id(),
+                                                       request_path.get_attribute_id(),
+                                                       to_stringval(request_path.get_simple_binary_data()),
+                                                       to_stringval(request_path.get_symbol_name_data()),
+                                                       zeek::make_intrusive<zeek::StringVal>(""));
                 }
             }
 
@@ -562,9 +708,12 @@ refine flow ENIP_Flow += {
                                                    true,
                                                    ${data.status},
                                                    get_unsigned(${data.status_extended}),
-                                                   request_path.class_id,
-                                                   request_path.instance_id,
-                                                   request_path.attribute_id);
+                                                   request_path.get_class_id(),
+                                                   request_path.get_instance_id(),
+                                                   request_path.get_attribute_id(),
+                                                   to_stringval(request_path.get_simple_binary_data()),
+                                                   to_stringval(request_path.get_symbol_name_data()),
+                                                   zeek::make_intrusive<zeek::StringVal>(""));
 
                 // CIP Header event for each service within multiple service packet
                 for(uint8 i=0; i < service_count;i++)
@@ -580,9 +729,12 @@ refine flow ENIP_Flow += {
                                                        true,
                                                        ${data.services[service_packet_location + 2]},
                                                        UINT32_MAX,
-                                                       request_path.class_id,
-                                                       request_path.instance_id,
-                                                       request_path.attribute_id);
+                                                       request_path.get_class_id(),
+                                                       request_path.get_instance_id(),
+                                                       request_path.get_attribute_id(),
+                                                       to_stringval(request_path.get_simple_binary_data()),
+                                                       to_stringval(request_path.get_symbol_name_data()),
+                                                       zeek::make_intrusive<zeek::StringVal>(""));
                 }
             }
             return true;

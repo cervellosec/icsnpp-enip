@@ -65,6 +65,9 @@ export{
         class_name                  : string    &log;   # CIP Request Path - Class Name (see cip_classes)
         instance_id                 : string    &log;   # CIP Request Path - Instance ID
         attribute_id                : string    &log;   # CIP Request Path - Attribute ID
+        cip_path_segment_binary     : string    &log;   # CIP Path Segment binary data
+        cip_path_segment_ansi       : string    &log;   # CIP Path Segment ANSI data
+        cip_unknown_service_payload : string    &log;   # CIP Unknown Service's payload binary data (for unknown services)
     };
     global log_cip: event(rec: CIP_Header);
     global log_policy_cip: Log::PolicyHook;
@@ -241,7 +244,10 @@ event cip_header(c: connection,
                  status_extended: count,
                  class_id: count,
                  instance_id: count,
-                 attribute_id: count){
+                 attribute_id: count,
+                 cip_path_segment_binary: string,
+                 cip_path_segment_ansi: string,
+                 cip_unknown_service_payload: string){
 
     set_service(c, "cip");
     local cip_header_item: CIP_Header;
@@ -270,6 +276,15 @@ event cip_header(c: connection,
     cip_header_item$packet_correlation_id = packet_correlation_id;
     cip_header_item$cip_service_code = fmt("0x%02x",service);
     cip_header_item$cip_service = cip_services[service];
+
+    if (|cip_path_segment_binary| > 0)
+        cip_header_item$cip_path_segment_binary = bytestring_to_hexstr(cip_path_segment_binary);
+
+    if (|cip_path_segment_ansi| > 0)
+        cip_header_item$cip_path_segment_ansi = cip_path_segment_ansi;
+
+    if (|cip_unknown_service_payload| > 0)
+        cip_header_item$cip_unknown_service_payload = bytestring_to_hexstr(cip_unknown_service_payload);
 
     if(response)
     {

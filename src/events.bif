@@ -39,15 +39,18 @@ event enip_header%(c: connection,
 ## Event Description:
 ##      Event is generated for all CIP packets and contains relevant CIP header data
 ## Event Data:
-##      - c:                    connection  -> Zeek Connection Struct
-##      - cip_sequence_count:   count       -> CIP sequence number for transport (connected data only)
-##      - service:              count       -> CIP Service Type (see cip_services in consts.zeek)
-##      - response:             bool        -> Request or Response boolean
-##      - status:               count       -> CIP Status Code (see cip_statuses in consts.zeek) 
-##      - status_extended:      count       -> CIP Status Code (see cip_extended_statuses in consts.zeek) 
-##      - class_id              count       -> CIP Request Path - Class ID
-##      - instance_id           count       -> CIP Request Path - Instance ID
-##      - attribute_id          count       -> CIP Request Path - Attribute ID
+##      - c:                          connection  -> Zeek Connection Struct
+##      - cip_sequence_count:         count       -> CIP sequence number for transport (connected data only)
+##      - service:                    count       -> CIP Service Type (see cip_services in consts.zeek)
+##      - response:                   bool        -> Request or Response boolean
+##      - status:                     count       -> CIP Status Code (see cip_statuses in consts.zeek) 
+##      - status_extended:            count       -> CIP Status Code (see cip_extended_statuses in consts.zeek) 
+##      - class_id                    count       -> CIP Request Path - Class ID
+##      - instance_id                 count       -> CIP Request Path - Instance ID
+##      - attribute_id                count       -> CIP Request Path - Attribute ID
+##      - cip_path_segment_binary     string      -> CIP Path Segment binary data
+##      - cip_path_segment_ansi       string      -> CIP Path Segment ANSI data
+##      - cip_unknown_service_payload string      -> CIP Unknown Service's payload binary data (for unknown services)
 ## Default Output:
 ##      Writes to log file cip.log
 ## ------------------------------------------------------------------------------------------------
@@ -61,7 +64,10 @@ event cip_header%(c: connection,
                   status_extended: count,
                   class_id: count,
                   instance_id: count,
-                  attribute_id: count%);
+                  attribute_id: count,
+                  cip_path_segment_binary: string,
+                  cip_path_segment_ansi: string,
+                  cip_unknown_service_payload: string%);
 
 ## ------------------------------------------cip-identity------------------------------------------
 ## Event Description:
