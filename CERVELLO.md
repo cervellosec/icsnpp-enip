@@ -13,11 +13,12 @@ comment, and each is a separate commit so it can be offered upstream on its own.
 | Extended status read as `status_extra` little-endian words | `enip-protocol.pac` (`CIP_Status`), `enip-analyzer.pac` (`get_unsigned`) | Upstream reads bytes, big-endian: `0x0107` logged as `0x0007`. |
 | CIP message bounded by its CPF item length | `enip-protocol.pac` (`Unconnected_Data_Item`, `Connected_Data_Item`) | A service parsed with `&restofdata` swallowed every following item (Sockaddr Info after a Forward_Open reply) and the next item then failed. |
 | Bounds checks in the request path helpers and the Multiple Service Packet loops | `enip-analyzer.pac` (`get_number`, `parse_request_*`) | Reads past a truncated path or a bad offset list. |
+| TCP framing resyncs on an implausible encapsulation header | `ENIP.cc` (`PlausibleENIPHeader`) | Upstream's reassembly (#46) trusts the length of whatever the direction starts with; a connection seen mid-stream whose first server bytes are a TCP keep-alive loses that direction until 64 KB have passed. |
 
 `cip.log` and the other logs are unchanged: the new events are not logged by default, like
 upstream's `connected_address`. Tests for each change are in `testing/analyzer/`; the traces are
 real captures (one TCP connection each), and `ctl-truncated-path.pcap` is `forward_open.pcap`
-with its request paths cut short.
+with its request paths cut short; `midstream_keepalive.pcap` is a connection captured from mid-stream.
 
 ## Keeping up with upstream
 
