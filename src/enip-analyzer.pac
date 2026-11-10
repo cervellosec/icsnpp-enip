@@ -55,16 +55,20 @@
     }
 
     // Get uint32 number from data in request path
+    // Cervello: bounds-checked, UINT32_MAX when the value does not fit in `data` (a truncated
+    // or malformed path), and the 32-bit case shifts by 16, not 13.
     uint32 get_number(uint8 size, uint16 x, const_bytestring data)
     {
+        int width = size == 0 ? 1 : size == 1 ? 2 : size == 2 ? 4 : 0;
+        if(width == 0 || x + width > data.length())
+            return UINT32_MAX;
+
         if(size == 0)
             return data[x];
         else if (size == 1)
             return (data[x+1] << 8) | data[x];
-        else if (size == 2)
-            return (data[x+3] << 24) | (data[x+2] << 13) | (data[x+1] << 8) | data[x];
-
-        return UINT32_MAX;
+        else
+            return (data[x+3] << 24) | (data[x+2] << 16) | (data[x+1] << 8) | data[x];
     }
 
     // Parse request path and return CIP_Request_Path struct
@@ -85,6 +89,7 @@
                 if(size > 0)
                     x += 1;
 
+                // Cervello: get_number returns UINT32_MAX when the value runs past the path.
                 if(choice == 0)
                     request_path.class_id = get_number(size, x, data);
                 else if(choice == 1)
@@ -112,8 +117,15 @@
     {
         CIP_Request_Path request_path;
 
+        // Cervello: the path size byte must be inside `data`, and the path it announces is
+        // clamped to `data`, so a malformed item cannot be read past the end.
+        if(starting_location >= data.length())
+            return request_path;
+
         uint16 x = starting_location;
         uint16 data_length = starting_location + (data[x] * 2) + 1;
+        if(data_length > data.length())
+            data_length = data.length();
         x += 1;
 
         while( (x + 1) < data_length )
@@ -126,12 +138,15 @@
                 if(size > 0)
                     x += 1;
 
+                // Cervello: bounded by the path, not by `data`, so a value cannot be read from
+                // the item's service data or the next item.
+                const_bytestring path(data.begin(), data.begin() + data_length);
                 if(choice == 0)
-                    request_path.class_id = get_number(size, x, data);
+                    request_path.class_id = get_number(size, x, path);
                 else if(choice == 1)
-                    request_path.instance_id = get_number(size, x, data);
+                    request_path.instance_id = get_number(size, x, path);
                 else if(choice == 4)
-                    request_path.attribute_id = get_number(size, x, data);
+                    request_path.attribute_id = get_number(size, x, path);
 
                 if(size == 0)
                     x += 1;
@@ -615,7 +630,11 @@ refine flow ENIP_Flow += {
                 string service_list = "";
                 for(uint8 i=0; i < service_count;i++)
                 {
-                    service_packet_location = ${data.service_offsets[i]} - (2*service_count) - 2;
+                    // Cervello: an offset before the item list or past the data is malformed.
+                    int location = ${data.service_offsets[i]} - (2*service_count) - 2;
+                    if ( location < 0 || location + 1 >= ${data.services}.length() )
+                        break;
+                    service_packet_location = location;
                     uint8 service_code = ${data.services[service_packet_location]} & 0x7f;
 
                     // append to list
@@ -718,7 +737,11 @@ refine flow ENIP_Flow += {
                 string service_list = "";
                 for(uint8 i=0; i < service_count;i++)
                 {
-                    service_packet_location = ${data.service_offsets[i]} - (2*service_count) - 2;
+                    // Cervello: an offset before the item list or past the status byte is malformed.
+                    int location = ${data.service_offsets[i]} - (2*service_count) - 2;
+                    if ( location < 0 || location + 2 >= ${data.services}.length() )
+                        break;
+                    service_packet_location = location;
                     uint8 service_code = ${data.services[service_packet_location]} & 0x7f;
 
                     // append to list
