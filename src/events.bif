@@ -48,6 +48,7 @@ event enip_header%(c: connection,
 ##      - class_id              count       -> CIP Request Path - Class ID
 ##      - instance_id           count       -> CIP Request Path - Instance ID
 ##      - attribute_id          count       -> CIP Request Path - Attribute ID
+##      - occurrence_count      count       -> Number of identical CIP records in this packet
 ## Default Output:
 ##      Writes to log file cip.log
 ## ------------------------------------------------------------------------------------------------
@@ -61,7 +62,8 @@ event cip_header%(c: connection,
                   status_extended: count,
                   class_id: count,
                   instance_id: count,
-                  attribute_id: count%);
+                  attribute_id: count,
+                  occurrence_count: count%);
 
 ## ------------------------------------------cip-identity------------------------------------------
 ## Event Description:
@@ -386,14 +388,12 @@ event get_attribute_single_response%(c: connection,
 ##      Event is generated for CIP service Set_Attribute_Single_Request 
 ## Event Data:
 ##      - c:                    connection  -> Zeek Connection Struct
-##      - attribute_id:         count       -> Identifies the attribute
 ##      - attribute_value:      string      -> Attribute data based on instance/class
 ## Default Output:
 ##      No defined log in main.zeek by default
 ## ------------------------------------------------------------------------------------------------
 event set_attribute_single_request%(c: connection,
                                     is_orig: bool,
-                                    attribute_id: count, 
                                     attribute_value: string%);
 
 ###################################################################################################

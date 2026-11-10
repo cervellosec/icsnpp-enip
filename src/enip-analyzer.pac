@@ -8,8 +8,11 @@
 ## Copyright (c) 2023 Battelle Energy Alliance, LLC.  All rights reserved.
 
 %extern{
+    #include <map>
     #include <sstream>
     #include <random>
+    #include <tuple>
+    #include <vector>
 %}
 %header{
 
@@ -208,7 +211,8 @@ refine flow ENIP_Flow += {
                                                    status_extended,
                                                    request_path.class_id,
                                                    request_path.instance_id,
-                                                   request_path.attribute_id);
+                                                   request_path.attribute_id,
+                                                   1);
             }
             return true;
         %}
@@ -501,6 +505,16 @@ refine flow ENIP_Flow += {
                 uint16 cip_sequence_count = ${data.cip_sequence_count};
                 CIP_Request_Path request_path = parse_request_path(${data.request_path.request_path});
 
+                struct Aggregated_Request {
+                    uint8 service_code;
+                    CIP_Request_Path request_path;
+                    uint64 occurrence_count;
+                };
+
+                typedef std::tuple<uint8, uint32, uint32, uint32> Request_Key;
+                std::map<Request_Key, size_t> seen_requests;
+                std::vector<Aggregated_Request> unique_requests;
+
                 // CIP Header event for multiple service packet
                 zeek::BifEvent::enqueue_cip_header(connection()->zeek_analyzer(),
                                                    connection()->zeek_analyzer()->Conn(),
@@ -513,26 +527,66 @@ refine flow ENIP_Flow += {
                                                    UINT32_MAX,
                                                    request_path.class_id,
                                                    request_path.instance_id,
-                                                   request_path.attribute_id);
+                                                   request_path.attribute_id,
+                                                   1);
 
-                // CIP Header event for each service within multiple service packet
+                // Build comma-separated list of service codes and generate CIP Header events for each
+                string service_list = "";
                 for(uint8 i=0; i < service_count;i++)
                 {
                     service_packet_location = ${data.service_offsets[i]} - (2*service_count) - 2;
-                    request_path = parse_request_multiple_service_packet(${data.services},service_packet_location+1);
+                    uint8 service_code = ${data.services[service_packet_location]} & 0x7f;
 
+                    // append to list
+                    if(i == 0)
+                        service_list = zeek::util::fmt("%d", service_code);
+                    else
+                        service_list += zeek::util::fmt(",%d", service_code);
+
+                    request_path = parse_request_multiple_service_packet(${data.services},service_packet_location+1);
+                    Request_Key key = std::make_tuple(service_code,
+                                                      request_path.class_id,
+                                                      request_path.instance_id,
+                                                      request_path.attribute_id);
+                    std::map<Request_Key, size_t>::iterator existing = seen_requests.find(key);
+
+                    if ( existing == seen_requests.end() )
+                    {
+                        seen_requests[key] = unique_requests.size();
+                        Aggregated_Request request = {service_code, request_path, 1};
+                        unique_requests.push_back(request);
+                    }
+                    else
+                        ++unique_requests[existing->second].occurrence_count;
+                }
+
+                // Enqueue one CIP header per unique inner service, preserving first-seen order.
+                for ( std::vector<Aggregated_Request>::const_iterator it = unique_requests.begin();
+                      it != unique_requests.end(); ++it )
+                {
                     zeek::BifEvent::enqueue_cip_header(connection()->zeek_analyzer(),
                                                        connection()->zeek_analyzer()->Conn(),
                                                        ${data.is_originator},
                                                        zeek::make_intrusive<zeek::StringVal>(${data.packet_correlation_id}),
                                                        cip_sequence_count,
-                                                       ${data.services[service_packet_location]} & 0x7f,
+                                                       it->service_code,
                                                        false,
                                                        UINT32_MAX,
                                                        UINT32_MAX,
-                                                       request_path.class_id,
-                                                       request_path.instance_id,
-                                                       request_path.attribute_id);
+                                                       it->request_path.class_id,
+                                                       it->request_path.instance_id,
+                                                       it->request_path.attribute_id,
+                                                       it->occurrence_count);
+                }
+
+                // Emit multiple_service_request event itself
+                if ( ::multiple_service_request )
+                {
+                    zeek::BifEvent::enqueue_multiple_service_request(connection()->zeek_analyzer(),
+                                                                      connection()->zeek_analyzer()->Conn(),
+                                                                      ${data.is_originator},
+                                                                      service_count,
+                                                                      zeek::make_intrusive<zeek::StringVal>(service_list));
                 }
             }
 
@@ -552,6 +606,16 @@ refine flow ENIP_Flow += {
                 uint8 service_count = ${data.service_count};
                 uint16 cip_sequence_count = ${data.cip_sequence_count};
 
+                struct Aggregated_Response {
+                    uint8 service_code;
+                    uint8 status;
+                    uint64 occurrence_count;
+                };
+
+                typedef std::tuple<uint8, uint8> Response_Key;
+                std::map<Response_Key, size_t> seen_responses;
+                std::vector<Aggregated_Response> unique_responses;
+
                 // CIP Header event for multiple service packet
                 zeek::BifEvent::enqueue_cip_header(connection()->zeek_analyzer(),
                                                    connection()->zeek_analyzer()->Conn(),
@@ -564,25 +628,63 @@ refine flow ENIP_Flow += {
                                                    get_unsigned(${data.status_extended}),
                                                    request_path.class_id,
                                                    request_path.instance_id,
-                                                   request_path.attribute_id);
+                                                   request_path.attribute_id,
+                                                   1);
 
-                // CIP Header event for each service within multiple service packet
+                // Build comma-separated list of service codes and generate CIP Header events for each
+                string service_list = "";
                 for(uint8 i=0; i < service_count;i++)
                 {
                     service_packet_location = ${data.service_offsets[i]} - (2*service_count) - 2;
+                    uint8 service_code = ${data.services[service_packet_location]} & 0x7f;
 
+                    // append to list
+                    if(i == 0)
+                        service_list = zeek::util::fmt("%d", service_code);
+                    else
+                        service_list += zeek::util::fmt(",%d", service_code);
+
+                    uint8 status = ${data.services[service_packet_location + 2]};
+                    Response_Key key = std::make_tuple(service_code, status);
+                    std::map<Response_Key, size_t>::iterator existing = seen_responses.find(key);
+
+                    if ( existing == seen_responses.end() )
+                    {
+                        seen_responses[key] = unique_responses.size();
+                        Aggregated_Response response = {service_code, status, 1};
+                        unique_responses.push_back(response);
+                    }
+                    else
+                        ++unique_responses[existing->second].occurrence_count;
+                }
+
+                // Enqueue one CIP header per unique inner service, preserving first-seen order.
+                for ( std::vector<Aggregated_Response>::const_iterator it = unique_responses.begin();
+                      it != unique_responses.end(); ++it )
+                {
                     zeek::BifEvent::enqueue_cip_header(connection()->zeek_analyzer(),
                                                        connection()->zeek_analyzer()->Conn(),
                                                        ${data.is_originator},
                                                        zeek::make_intrusive<zeek::StringVal>(${data.packet_correlation_id}),
                                                        cip_sequence_count,
-                                                       ${data.services[service_packet_location]} & 0x7f,
+                                                       it->service_code,
                                                        true,
-                                                       ${data.services[service_packet_location + 2]},
+                                                       it->status,
                                                        UINT32_MAX,
                                                        request_path.class_id,
                                                        request_path.instance_id,
-                                                       request_path.attribute_id);
+                                                       request_path.attribute_id,
+                                                       it->occurrence_count);
+                }
+
+                // Emit multiple_service_response event itself
+                if ( ::multiple_service_response )
+                {
+                    zeek::BifEvent::enqueue_multiple_service_response(connection()->zeek_analyzer(),
+                                                                       connection()->zeek_analyzer()->Conn(),
+                                                                       ${data.is_originator},
+                                                                       service_count,
+                                                                       zeek::make_intrusive<zeek::StringVal>(service_list));
                 }
             }
             return true;
@@ -613,7 +715,6 @@ refine flow ENIP_Flow += {
                 zeek::BifEvent::enqueue_set_attribute_single_request(connection()->zeek_analyzer(),
                                                                      connection()->zeek_analyzer()->Conn(),
                                                                      ${data.is_originator},
-                                                                     ${data.attribute_id},
                                                                      to_stringval(${data.attribute_data}));
             }
             return true;
