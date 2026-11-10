@@ -493,10 +493,91 @@ refine flow ENIP_Flow += {
         %}
 
     ###############################################################################################
+    ##########  Cervello: one event per item of a Multiple Service Packet, in packet order  ########
+    ###############################################################################################
+    ## The cip_header events for the items are aggregated by service and path (requests) or service
+    ## and status (responses), which loses the order a reply item is matched to its request by: item
+    ## i of the reply answers item i of the request. These keep the order and hand out the reply
+    ## data. Item i spans services[offset_i - header : offset_i+1 - header), header being the count
+    ## and offset list. Raised only when a handler exists.
+    function emit_multiple_service_request_items(data: Multiple_Service_Packet_Request): bool
+        %{
+            if ( ! ::multiple_service_request_item )
+                return true;
+
+            const_bytestring services = ${data.services};
+            uint16 service_count = ${data.service_count};
+            int header_size = 2 * service_count + 2;
+
+            for ( uint16 i = 0; i < service_count; i++ )
+            {
+                int start = ${data.service_offsets[i]} - header_size;
+                int end = (i + 1 < service_count) ? ${data.service_offsets[i + 1]} - header_size : services.length();
+                // Request item: service, path size, path, data. Offsets must be increasing.
+                if ( start < 0 || start + 2 > end || end > services.length() )
+                    break;
+
+                uint8 service_code = services[start] & 0x7f;
+                CIP_Request_Path path = parse_request_multiple_service_packet(services, start + 1);
+
+                zeek::BifEvent::enqueue_multiple_service_request_item(connection()->zeek_analyzer(),
+                                                                      connection()->zeek_analyzer()->Conn(),
+                                                                      ${data.is_originator},
+                                                                      zeek::make_intrusive<zeek::StringVal>(${data.packet_correlation_id}),
+                                                                      ${data.cip_sequence_count},
+                                                                      i,
+                                                                      service_code,
+                                                                      path.class_id,
+                                                                      path.instance_id,
+                                                                      path.attribute_id);
+            }
+            return true;
+        %}
+
+    function emit_multiple_service_response_items(data: Multiple_Service_Packet_Response): bool
+        %{
+            if ( ! ::multiple_service_response_item )
+                return true;
+
+            const_bytestring services = ${data.services};
+            uint16 service_count = ${data.service_count};
+            int header_size = 2 * service_count + 2;
+
+            for ( uint16 i = 0; i < service_count; i++ )
+            {
+                int start = ${data.service_offsets[i]} - header_size;
+                int end = (i + 1 < service_count) ? ${data.service_offsets[i + 1]} - header_size : services.length();
+                // Reply item: service, reserved, general status, additional status size (in
+                // words), additional status, data. Offsets must be increasing.
+                if ( start < 0 || start + 4 > end || end > services.length() )
+                    break;
+
+                uint8 service_code = services[start] & 0x7f;
+                uint8 status = services[start + 2];
+                int data_start = start + 4 + 2 * services[start + 3];
+                if ( data_start > end )
+                    break;
+
+                zeek::BifEvent::enqueue_multiple_service_response_item(connection()->zeek_analyzer(),
+                                                                       connection()->zeek_analyzer()->Conn(),
+                                                                       ${data.is_originator},
+                                                                       zeek::make_intrusive<zeek::StringVal>(${data.packet_correlation_id}),
+                                                                       ${data.cip_sequence_count},
+                                                                       i,
+                                                                       service_code,
+                                                                       status,
+                                                                       to_stringval(const_bytestring(services.begin() + data_start, services.begin() + end)));
+            }
+            return true;
+        %}
+
+    ###############################################################################################
     ######################  Process data for multiple_service_request event  ######################
     ###############################################################################################
     function process_multiple_service_request(data: Multiple_Service_Packet_Request): bool
         %{
+            emit_multiple_service_request_items(data);  // Cervello
+
             if ( ::cip_header )
             {
                 uint16 service_packet_location;
@@ -598,6 +679,8 @@ refine flow ENIP_Flow += {
     ###############################################################################################
     function process_multiple_service_response(data: Multiple_Service_Packet_Response): bool
         %{
+            emit_multiple_service_response_items(data);  // Cervello
+
             if ( ::cip_header )
             {
                 CIP_Request_Path request_path;

@@ -423,6 +423,59 @@ event forward_open_response%(c: connection,
                              originator_vendor_id: count,
                              originator_serial: count%);
 
+## --------------------------------multiple-service-request-item-----------------------------------
+## Cervello addition.
+## Event Description:
+##      Event is generated for each item of a Multiple Service Packet request, in packet order.
+##      Unlike the aggregated cip_header events, item i here is answered by item i of the
+##      multiple_service_response_item events of the reply.
+## Event Data:
+##      - c:                        connection  -> Zeek Connection Struct
+##      - packet_correlation_id:    string      -> Ties the item to its enip_header and cip_header
+##      - cip_sequence_count:       count       -> CIP sequence number for transport (connected only)
+##      - index:                    count       -> Position of the item in the packet, from 0
+##      - service:                  count       -> CIP service of the item
+##      - class_id:                 count       -> Item's request path - Class ID
+##      - instance_id:              count       -> Item's request path - Instance ID
+##      - attribute_id:             count       -> Item's request path - Attribute ID
+## Default Output:
+##      No defined log in main.zeek by default
+## ------------------------------------------------------------------------------------------------
+event multiple_service_request_item%(c: connection,
+                                     is_orig: bool,
+                                     packet_correlation_id: string,
+                                     cip_sequence_count: count,
+                                     index: count,
+                                     service: count,
+                                     class_id: count,
+                                     instance_id: count,
+                                     attribute_id: count%);
+
+## -------------------------------multiple-service-response-item-----------------------------------
+## Cervello addition.
+## Event Description:
+##      Event is generated for each item of a Multiple Service Packet response, in packet order.
+##      Item i answers item i of the request (see multiple_service_request_item).
+## Event Data:
+##      - c:                        connection  -> Zeek Connection Struct
+##      - packet_correlation_id:    string      -> Ties the item to its enip_header and cip_header
+##      - cip_sequence_count:       count       -> CIP sequence number for transport (connected only)
+##      - index:                    count       -> Position of the item in the packet, from 0
+##      - service:                  count       -> CIP service of the item
+##      - status:                   count       -> Item's CIP general status
+##      - data:                     string      -> Item's reply data, after the status fields
+## Default Output:
+##      No defined log in main.zeek by default
+## ------------------------------------------------------------------------------------------------
+event multiple_service_response_item%(c: connection,
+                                      is_orig: bool,
+                                      packet_correlation_id: string,
+                                      cip_sequence_count: count,
+                                      index: count,
+                                      service: count,
+                                      status: count,
+                                      data: string%);
+
 ###################################################################################################
 #################################  END OF NOT LOGGED BY DEFAULT  ##################################
 ###################################################################################################
