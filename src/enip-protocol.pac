@@ -537,6 +537,8 @@ type CIP_Header(is_orig: bool, cip_sequence_count: uint16, packet_correlation_id
         SET_ATTRIBUTE_LIST_RESPONSE     -> set_attribute_list_response:     Set_Attribute_List_Response(is_orig);
         MULTIPLE_SERVICE                -> multiple_service_request:        Multiple_Service_Packet_Request(is_orig, cip_sequence_count, request_path, packet_correlation_id);
         MULTIPLE_SERVICE_RESPONSE       -> multiple_service_response:       Multiple_Service_Packet_Response(is_orig, cip_sequence_count, response_packet.status, response_packet.status_extended, packet_correlation_id);
+        FORWARD_OPEN_RESPONSE           -> forward_open_response:           Forward_Open_Response(is_orig, response_packet.status, packet_correlation_id);
+        LARGE_FORWARD_OPEN_RESPONSE     -> large_forward_open_response:     Forward_Open_Response(is_orig, response_packet.status, packet_correlation_id);
         GET_ATTRIBUTE_SINGLE_RESPONSE   -> get_attribute_single_response:   Get_Attribute_Single_Response(is_orig);
         SET_ATTRIBUTE_SINGLE            -> set_attribute_single_request:    Set_Attribute_Single_Request(is_orig);
         default                         -> other:                           bytestring &restofdata;
@@ -765,6 +767,48 @@ type Set_Attribute_Single_Request(is_orig: bool) = record {
 } &let {
     is_originator: bool = is_orig;
     deliver: bool = $context.flow.process_set_attribute_single_request(this);
+} &byteorder=littleendian;
+
+## ------------------------------------Forward-Open-Response---------------------------------------
+## Cervello addition.
+## Message Description:
+##      Reply to the Connection Manager services Forward_Open (0x54) and Large_Forward_Open (0x5B),
+##      the only CIP message that carries both IDs of a connection. A successful reply (status 0)
+##      has the fixed layout below. A failed reply carries only the connection serial, vendor,
+##      originator serial and remaining path size, so it is left unparsed.
+## Message Format (success):
+##      - O->T Connection ID:       uint32              -> Chosen by the target
+##      - T->O Connection ID:       uint32              -> Chosen by the originator
+##      - Connection Serial:        uint16              -> With the two originator fields, the
+##      - Originator Vendor ID:     uint16                 connection's unique name
+##      - Originator Serial:        uint32
+##      - O->T API:                 uint32              -> Actual packet intervals
+##      - T->O API:                 uint32
+##      - Application Reply Size:   uint8               -> In 16-bit words
+##      - Reserved:                 uint8
+##      - Application Reply:        variable
+## Protocol Parsing:
+##      Sends the connection IDs and the connection triad to the forward_open_response event.
+## ------------------------------------------------------------------------------------------------
+type Forward_Open_Response(is_orig: bool, status: uint8, packet_correlation_id: string) = case status of {
+    0           -> success:         Forward_Open_Success(is_orig, packet_correlation_id);
+    default     -> failure:         bytestring &restofdata;
+};
+
+type Forward_Open_Success(is_orig: bool, packet_correlation_id: string) = record {
+    ot_connection_id        : uint32;
+    to_connection_id        : uint32;
+    connection_serial       : uint16;
+    originator_vendor_id    : uint16;
+    originator_serial       : uint32;
+    ot_api                  : uint32;
+    to_api                  : uint32;
+    app_reply_size          : uint8;
+    reserved                : uint8;
+    app_reply               : bytestring &length=app_reply_size*2;
+} &let {
+    is_originator: bool = is_orig;
+    deliver: bool = $context.flow.process_forward_open_response(this);
 } &byteorder=littleendian;
 
 ###################################################################################################

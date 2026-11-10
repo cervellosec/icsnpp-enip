@@ -396,6 +396,33 @@ event set_attribute_single_request%(c: connection,
                                     is_orig: bool,
                                     attribute_value: string%);
 
+## ------------------------------------forward-open-response---------------------------------------
+## Cervello addition.
+## Event Description:
+##      Event is generated for a successful CIP Connection Manager Forward_Open or
+##      Large_Forward_Open response, the only CIP message that carries both IDs of a connection.
+##      The reply goes from the target to the originator of the connection.
+## Event Data:
+##      - c:                        connection  -> Zeek Connection Struct
+##      - is_orig:                  bool        -> The reply came from the TCP originator
+##      - packet_correlation_id:    string      -> Ties the reply to its enip_header and cip_header
+##      - ot_connection_id:         count       -> O->T Network Connection ID (chosen by the target)
+##      - to_connection_id:         count       -> T->O Network Connection ID (chosen by the originator)
+##      - connection_serial:        count       -> Connection Serial Number
+##      - originator_vendor_id:     count       -> Originator Vendor ID
+##      - originator_serial:        count       -> Originator Serial Number
+## Default Output:
+##      No defined log in main.zeek by default
+## ------------------------------------------------------------------------------------------------
+event forward_open_response%(c: connection,
+                             is_orig: bool,
+                             packet_correlation_id: string,
+                             ot_connection_id: count,
+                             to_connection_id: count,
+                             connection_serial: count,
+                             originator_vendor_id: count,
+                             originator_serial: count%);
+
 ###################################################################################################
 #################################  END OF NOT LOGGED BY DEFAULT  ##################################
 ###################################################################################################

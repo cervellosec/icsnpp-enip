@@ -719,4 +719,24 @@ refine flow ENIP_Flow += {
             }
             return true;
         %}
+
+    ###############################################################################################
+    ##############  Cervello: process data for forward_open_response event  #######################
+    ###############################################################################################
+    function process_forward_open_response(data: Forward_Open_Success): bool
+        %{
+            if ( ::forward_open_response )
+            {
+                zeek::BifEvent::enqueue_forward_open_response(connection()->zeek_analyzer(),
+                                                              connection()->zeek_analyzer()->Conn(),
+                                                              ${data.is_originator},
+                                                              zeek::make_intrusive<zeek::StringVal>(${data.packet_correlation_id}),
+                                                              ${data.ot_connection_id},
+                                                              ${data.to_connection_id},
+                                                              ${data.connection_serial},
+                                                              ${data.originator_vendor_id},
+                                                              ${data.originator_serial});
+            }
+            return true;
+        %}
 };

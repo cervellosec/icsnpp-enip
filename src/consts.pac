@@ -86,4 +86,7 @@ enum cip_common_services
     SET_ATTRIBUTE_LIST_RESPONSE         = 0x84,
     MULTIPLE_SERVICE_RESPONSE           = 0x8A,
     GET_ATTRIBUTE_SINGLE_RESPONSE       = 0x8E,
+    # Cervello: Connection Manager replies parsed for their connection IDs (Forward_Open_Response)
+    FORWARD_OPEN_RESPONSE               = 0xD4,
+    LARGE_FORWARD_OPEN_RESPONSE         = 0xDB,
 }
