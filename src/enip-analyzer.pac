@@ -37,6 +37,9 @@
 %code{
 
     // Get uint32 number from status_extended array
+    // Cervello: the extended status is an array of little-endian 16-bit words; the first word is
+    // the code Wireshark shows (e.g. 0x0107 "Connection not found"). Up to two words are packed,
+    // first word in the high half.
     uint32 get_unsigned(const_bytestring data)
     {
         if(data.length() == 0)
@@ -44,12 +47,9 @@
             return UINT32_MAX;
         }
         uint32 number = 0;
-        for ( int32 i = 0; i < data.length(); ++i ){
-            number <<= 8;
-            number |= data[i];
-
-            if ( i == 3 )
-                return number;
+        for ( int32 i = 0; i + 1 < data.length() && i < 4; i += 2 ){
+            number <<= 16;
+            number |= data[i] | (data[i+1] << 8);
         }
         return number;
     }

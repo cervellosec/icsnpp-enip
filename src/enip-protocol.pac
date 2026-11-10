@@ -461,7 +461,9 @@ type Sequenced_Address_Item(is_orig: bool) = record {
 ##      Continue with parsing of CIP Data (see CIP_Header)
 ## ------------------------------------------------------------------------------------------------
 type Unconnected_Data_Item(is_orig: bool, message_size: uint16, packet_correlation_id: string) = record {
-    unconnected_message     : CIP_Header(is_orig, 0, packet_correlation_id);
+    # Cervello: bounded by the item length, so a service's &restofdata ends with the item and a
+    # following item (e.g. Sockaddr Info after a Forward_Open reply) is still parsed.
+    unconnected_message     : CIP_Header(is_orig, 0, packet_correlation_id) &length=message_size;
 } &byteorder=littleendian;
 
 ## --------------------------------------Connected-Data-Item---------------------------------------
@@ -475,7 +477,8 @@ type Unconnected_Data_Item(is_orig: bool, message_size: uint16, packet_correlati
 ## ------------------------------------------------------------------------------------------------
 type Connected_Data_Item(is_orig: bool, message_size: uint16, packet_correlation_id: string) = record {
     cip_sequence_count      : uint16;
-    transport_packet        : CIP_Header(is_orig, cip_sequence_count, packet_correlation_id);
+    # Cervello: bounded by the item length less the sequence count, see Unconnected_Data_Item.
+    transport_packet        : CIP_Header(is_orig, cip_sequence_count, packet_correlation_id) &length=message_size-2;
 } &byteorder=littleendian;
 
 ## ------------------------------------Unconnected-Message-DTLS------------------------------------
@@ -563,7 +566,7 @@ type CIP_Header(is_orig: bool, cip_sequence_count: uint16, packet_correlation_id
 type CIP_Status = record {
     status                  : uint8;
     status_extra            : uint8;
-    status_extended         : bytestring &length = status_extra;
+    status_extended         : bytestring &length = status_extra*2;   # Cervello: size is in 16-bit words
 } &byteorder=littleendian;
 
 ## ------------------------------------------Request-Path------------------------------------------
