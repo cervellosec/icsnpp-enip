@@ -49,6 +49,24 @@ namespace zeek::analyzer::enip {
       ProcessTCPData(buffer, orig);
   }
 
+  // Cervello: whether 24 bytes look like an ENIP encapsulation header: a known command (the
+  // high byte of the uint16 is 0 for all of them) and the options word, which the spec says
+  // shall be 0.
+  static bool PlausibleENIPHeader(const u_char* p)
+  {
+      if ( p[1] != 0 || p[20] != 0 || p[21] != 0 || p[22] != 0 || p[23] != 0 )
+          return false;
+
+      switch ( p[0] )
+      {
+          case 0x00: case 0x04: case 0x63: case 0x64: case 0x65:
+          case 0x66: case 0x6F: case 0x70: case 0x72: case 0x73:
+              return true;
+          default:
+              return false;
+      }
+  }
+
   void ENIP_TCP_Analyzer::ProcessTCPData(std::vector<u_char>& buffer, bool orig)
   {
       static constexpr size_t ENIP_HEADER_LEN = 24;
@@ -59,6 +77,16 @@ namespace zeek::analyzer::enip {
       while ( buffer.size() - offset >= ENIP_HEADER_LEN )
       {
           const u_char* pdu = buffer.data() + offset;
+
+          // Cervello: a direction first seen mid-stream can start inside a PDU, or with the one
+          // stray byte of a TCP keep-alive. Trusting that header's length field would wedge the
+          // direction until ENIP_MAX_PDU_LEN bytes have passed; skip to the next plausible header.
+          if ( ! PlausibleENIPHeader(pdu) )
+          {
+              ++offset;
+              continue;
+          }
+
           size_t enc_len = pdu[2] | (static_cast<size_t>(pdu[3]) << 8);
           size_t pdu_len = ENIP_HEADER_LEN + enc_len;
 
