@@ -166,6 +166,30 @@
 
 %}
 
+## Cervello: Connection Manager Forward_Open / Large_Forward_Open requests awaiting their reply.
+## Their reply's service code (0xD4 / 0xDB) is shared with other classes' services, so only a
+## reply to one of these is decoded as a Forward_Open reply.
+refine connection ENIP_Conn += {
+    %member{
+        uint32 pending_forward_opens_ = 0;
+    %}
+
+    function note_forward_open_request(): bool
+        %{
+        ++pending_forward_opens_;
+        return true;
+        %}
+
+    function take_forward_open_request(): bool
+        %{
+        if ( pending_forward_opens_ == 0 )
+            return false;
+
+        --pending_forward_opens_;
+        return true;
+        %}
+};
+
 refine flow ENIP_Flow += {
 
     ###############################################################################################
@@ -194,6 +218,13 @@ refine flow ENIP_Flow += {
     ###############################################################################################
     function process_cip_header(cip_header: CIP_Header): bool
         %{
+            // Cervello: remember a Connection Manager Forward_Open request (see
+            // process_forward_open_response).
+            if ( ${cip_header.request_or_response} == 0 &&
+                 (${cip_header.service_code} == 0x54 || ${cip_header.service_code} == 0x5B) &&
+                 parse_request_path(${cip_header.request_path.request_path}).class_id == 0x06 )
+                connection()->note_forward_open_request();
+
             if ( ::cip_header )
             {
                 // MULTIPLE_SERVICE CIP header data is parsed in process_multiple_service_request 
@@ -533,7 +564,10 @@ refine flow ENIP_Flow += {
                     break;
 
                 uint8 service_code = services[start] & 0x7f;
-                CIP_Request_Path path = parse_request_multiple_service_packet(services, start + 1);
+                // The path is parsed within this item only, so a malformed path size cannot read
+                // the next item's bytes as this one's class, instance or attribute.
+                CIP_Request_Path path = parse_request_multiple_service_packet(
+                    const_bytestring(services.begin(), services.begin() + end), start + 1);
 
                 zeek::BifEvent::enqueue_multiple_service_request_item(connection()->zeek_analyzer(),
                                                                       connection()->zeek_analyzer()->Conn(),
@@ -643,7 +677,17 @@ refine flow ENIP_Flow += {
                     else
                         service_list += zeek::util::fmt(",%d", service_code);
 
-                    request_path = parse_request_multiple_service_packet(${data.services},service_packet_location+1);
+                    // Cervello: parse the path within this item only (it ends at the next offset).
+                    int item_end = ${data.services}.length();
+                    if ( i + 1 < service_count )
+                    {
+                        int next = ${data.service_offsets[i + 1]} - (2*service_count) - 2;
+                        if ( next > location && next < item_end )
+                            item_end = next;
+                    }
+                    request_path = parse_request_multiple_service_packet(
+                        const_bytestring(${data.services}.begin(), ${data.services}.begin() + item_end),
+                        service_packet_location+1);
                     Request_Key key = std::make_tuple(service_code,
                                                       request_path.class_id,
                                                       request_path.instance_id,
@@ -829,20 +873,30 @@ refine flow ENIP_Flow += {
     ###############################################################################################
     ##############  Cervello: process data for forward_open_response event  #######################
     ###############################################################################################
-    function process_forward_open_response(data: Forward_Open_Success): bool
+    function process_forward_open_response(data: Forward_Open_Response): bool
         %{
-            if ( ::forward_open_response )
-            {
-                zeek::BifEvent::enqueue_forward_open_response(connection()->zeek_analyzer(),
-                                                              connection()->zeek_analyzer()->Conn(),
-                                                              ${data.is_originator},
-                                                              zeek::make_intrusive<zeek::StringVal>(${data.packet_correlation_id}),
-                                                              ${data.ot_connection_id},
-                                                              ${data.to_connection_id},
-                                                              ${data.connection_serial},
-                                                              ${data.originator_vendor_id},
-                                                              ${data.originator_serial});
-            }
+            // Every reply to 0x54 / 0x5B takes one pending Connection Manager request, decoded
+            // or not, so a failed reply does not leave its request pending.
+            if ( ! connection()->take_forward_open_request() )
+                return true;
+
+            // A successful reply's fixed part is 26 bytes (see Forward_Open_Response).
+            const_bytestring reply = ${data.reply};
+            if ( ${data.status} != 0 || reply.length() < 26 || ! ::forward_open_response )
+                return true;
+
+            auto u16 = [&](int o) -> uint32 { return reply[o] | (reply[o + 1] << 8); };
+            auto u32 = [&](int o) -> uint32 { return u16(o) | (u16(o + 2) << 16); };
+
+            zeek::BifEvent::enqueue_forward_open_response(connection()->zeek_analyzer(),
+                                                          connection()->zeek_analyzer()->Conn(),
+                                                          ${data.is_originator},
+                                                          zeek::make_intrusive<zeek::StringVal>(${data.packet_correlation_id}),
+                                                          u32(0),     // O->T connection ID
+                                                          u32(4),     // T->O connection ID
+                                                          u16(8),     // connection serial
+                                                          u16(10),    // originator vendor ID
+                                                          u32(12));   // originator serial
             return true;
         %}
 };

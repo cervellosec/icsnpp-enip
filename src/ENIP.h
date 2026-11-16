@@ -50,6 +50,12 @@ namespace zeek::analyzer::enip {
           std::vector<u_char> orig_buffer;
           std::vector<u_char> resp_buffer;
 
+          // Cervello: whether each direction's framing is known to sit on a PDU boundary. Until
+          // it is (stream start, after a gap or a parse error), PDUs are found by scanning for a
+          // plausible header; once it is, the length field alone frames them.
+          bool orig_aligned = false;
+          bool resp_aligned = false;
+
           void ProcessTCPData(std::vector<u_char>& buffer, bool orig);
   };
 

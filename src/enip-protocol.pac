@@ -791,24 +791,14 @@ type Set_Attribute_Single_Request(is_orig: bool) = record {
 ##      - Reserved:                 uint8
 ##      - Application Reply:        variable
 ## Protocol Parsing:
-##      Sends the connection IDs and the connection triad to the forward_open_response event.
+##      Service codes 0x54 and 0x5B are class-specific: other classes use them for other services
+##      with other reply layouts. So the reply is kept as bytes and decoded in
+##      process_forward_open_response only when it answers a Connection Manager (class 0x06)
+##      request seen on the connection, and only when it is long enough. It never throws, so an
+##      unexpected reply cannot disable the analyzer.
 ## ------------------------------------------------------------------------------------------------
-type Forward_Open_Response(is_orig: bool, status: uint8, packet_correlation_id: string) = case status of {
-    0           -> success:         Forward_Open_Success(is_orig, packet_correlation_id);
-    default     -> failure:         bytestring &restofdata;
-};
-
-type Forward_Open_Success(is_orig: bool, packet_correlation_id: string) = record {
-    ot_connection_id        : uint32;
-    to_connection_id        : uint32;
-    connection_serial       : uint16;
-    originator_vendor_id    : uint16;
-    originator_serial       : uint32;
-    ot_api                  : uint32;
-    to_api                  : uint32;
-    app_reply_size          : uint8;
-    reserved                : uint8;
-    app_reply               : bytestring &length=app_reply_size*2;
+type Forward_Open_Response(is_orig: bool, status: uint8, packet_correlation_id: string) = record {
+    reply                   : bytestring &restofdata;
 } &let {
     is_originator: bool = is_orig;
     deliver: bool = $context.flow.process_forward_open_response(this);

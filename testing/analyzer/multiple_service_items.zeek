@@ -1,10 +1,14 @@
 # @TEST-EXEC: zeek -C -r ${TRACES}/multiple_service_packet_cip.pcapng %INPUT > output
 # @TEST-EXEC: zeek -r ${TRACES}/multiple_service_items.pcap %INPUT >> output
+# @TEST-EXEC: zeek -C -r ${TRACES}/ctl-msp-truncated-path.pcap %INPUT >> output
 # @TEST-EXEC: btest-diff output
 #
 # @TEST-DOC: Per-item Multiple Service Packet events, in packet order (Cervello addition). The
 # first trace is upstream's 11-item request; the second is a real request/reply pair whose six
 # items include a Get_Attributes_All, so reply item i carries the data answering request item i.
+# The third is that pair with request item 3's path size raised by one word and its last segment
+# made a 16-bit class segment (30 1b -> 21 00), so the path runs past the item: the class value
+# must not be read from item 4's first bytes (0e 04).
 
 @load icsnpp/enip
 

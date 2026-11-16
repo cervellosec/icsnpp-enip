@@ -8,17 +8,18 @@ comment, and each is a separate commit so it can be offered upstream on its own.
 
 | Change | Where | Why |
 |---|---|---|
-| `forward_open_response` event: both connection IDs and the connection triad of a successful Forward_Open / Large_Forward_Open reply | `consts.pac`, `enip-protocol.pac` (`Forward_Open_Response`), `enip-analyzer.pac`, `events.bif` | The reply is the only CIP message carrying both IDs; it was opaque bytes. The sensor pairs a connection's two directions with it. |
+| `forward_open_response` event: both connection IDs and the connection triad of a successful Forward_Open / Large_Forward_Open reply | `consts.pac`, `enip-protocol.pac` (`Forward_Open_Response`), `enip-analyzer.pac` (`process_forward_open_response`, `ENIP_Conn` pending requests), `events.bif` | The reply is the only CIP message carrying both IDs; it was opaque bytes. The sensor pairs a connection's two directions with it. 0x54 / 0x5B are class-specific, so only a reply to a Connection Manager (class 0x06) request seen on the connection is decoded, and the decode cannot throw. Forward_Opens sent inside Unconnected Send are not recognised. |
 | `multiple_service_request_item` / `multiple_service_response_item` events, one per item in packet order with the reply data | `enip-analyzer.pac` (`emit_multiple_service_*_items`), `events.bif` | The aggregated `cip_header` events lose the order reply item *i* answers request item *i* by, and never hand out a reply item's bytes. |
 | Extended status read as `status_extra` little-endian words | `enip-protocol.pac` (`CIP_Status`), `enip-analyzer.pac` (`get_unsigned`) | Upstream reads bytes, big-endian: `0x0107` logged as `0x0007`. |
 | CIP message bounded by its CPF item length | `enip-protocol.pac` (`Unconnected_Data_Item`, `Connected_Data_Item`) | A service parsed with `&restofdata` swallowed every following item (Sockaddr Info after a Forward_Open reply) and the next item then failed. |
-| Bounds checks in the request path helpers and the Multiple Service Packet loops | `enip-analyzer.pac` (`get_number`, `parse_request_*`) | Reads past a truncated path or a bad offset list. |
-| TCP framing resyncs on an implausible encapsulation header | `ENIP.cc` (`PlausibleENIPHeader`) | Upstream's reassembly (#46) trusts the length of whatever the direction starts with; a connection seen mid-stream whose first server bytes are a TCP keep-alive loses that direction until 64 KB have passed. |
+| Bounds checks in the request path helpers and the Multiple Service Packet loops, each item's path parsed within the item | `enip-analyzer.pac` (`get_number`, `parse_request_*`) | Reads past a truncated path or a bad offset list, or a path read from the next item's bytes. |
+| TCP framing scans for a plausible encapsulation header until aligned | `ENIP.cc`, `ENIP.h` (`PlausibleENIPHeader`, `orig_aligned` / `resp_aligned`) | Upstream's reassembly (#46) trusts the length of whatever the direction starts with; a connection seen mid-stream whose first server bytes are a TCP keep-alive loses that direction until 64 KB have passed. Only at stream start and after a gap or a parse error; once aligned, the length field frames every PDU, whatever its command or options. |
 
 `cip.log` and the other logs are unchanged: the new events are not logged by default, like
 upstream's `connected_address`. Tests for each change are in `testing/analyzer/`; the traces are
 real captures (one TCP connection each), and `ctl-truncated-path.pcap` is `forward_open.pcap`
 with its request paths cut short; `midstream_keepalive.pcap` is a connection captured from mid-stream.
+The other `ctl-*.pcap` traces are real traces with one field edited, named for the case they test.
 
 ## Keeping up with upstream
 

@@ -73,6 +73,9 @@ namespace zeek::analyzer::enip {
       // Encapsulation length is a uint16, so a PDU is at most 24 + 0xFFFF.
       static constexpr size_t ENIP_MAX_PDU_LEN = ENIP_HEADER_LEN + 0xFFFF;
 
+      // Cervello: set once a PDU found at a plausible header parses; see orig_aligned.
+      bool& aligned = orig ? orig_aligned : resp_aligned;
+
       size_t offset = 0;
       while ( buffer.size() - offset >= ENIP_HEADER_LEN )
       {
@@ -80,8 +83,10 @@ namespace zeek::analyzer::enip {
 
           // Cervello: a direction first seen mid-stream can start inside a PDU, or with the one
           // stray byte of a TCP keep-alive. Trusting that header's length field would wedge the
-          // direction until ENIP_MAX_PDU_LEN bytes have passed; skip to the next plausible header.
-          if ( ! PlausibleENIPHeader(pdu) )
+          // direction until ENIP_MAX_PDU_LEN bytes have passed, so until the framing is known
+          // to be aligned, skip to the next plausible header. Once it is, the length field
+          // frames every PDU, whatever its command or options.
+          if ( ! aligned && ! PlausibleENIPHeader(pdu) )
           {
               ++offset;
               continue;
@@ -96,9 +101,13 @@ namespace zeek::analyzer::enip {
           try
           {
               interp->NewData(orig, pdu, pdu + pdu_len);
+              aligned = true;
           }
           catch(const binpac::Exception& e)
           {
+              // Cervello: the length may have framed garbage; look for a header again.
+              aligned = false;
+
               #if ZEEK_VERSION_NUMBER < 40200
               ProtocolViolation(util::fmt("Binpac exception: %s", e.c_msg()));
 
@@ -117,7 +126,10 @@ namespace zeek::analyzer::enip {
       // Bound memory if we're wedged mid-PDU on an implausible length field
       // (e.g. non-ENIP traffic on the port); resync on the next header.
       if ( buffer.size() > ENIP_MAX_PDU_LEN )
+      {
           buffer.clear();
+          aligned = false;  // Cervello
+      }
   }
 
   void ENIP_TCP_Analyzer::Undelivered(uint64_t seq, int len, bool orig)
@@ -128,6 +140,7 @@ namespace zeek::analyzer::enip {
       // direction so we resync on the next complete header rather than treating
       // post-gap bytes as a continuation of the pre-gap PDU.
       (orig ? orig_buffer : resp_buffer).clear();
+      (orig ? orig_aligned : resp_aligned) = false;  // Cervello: post-gap bytes may start mid-PDU
       interp->NewGap(orig, len);
   }
 
