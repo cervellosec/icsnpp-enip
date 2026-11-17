@@ -1,3 +1,10 @@
+# Build Status
+
+| Source       | `main` Status | `main` Timestamp |
+|--------------|--------------|------------|
+| **CISAGOV** | ![Build Status](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.github.com%2Frepos%2Fcisagov%2Ficsnpp-enip%2Fcommits%2Fmain%2Fstatus&query=state&label=build) | ![Last Build](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.github.com%2Frepos%2Fcisagov%2Ficsnpp-enip%2Fcommits%2Fmain%2Fstatus&query=statuses[0].updated_at&label=last%20build&color=lightgrey) |
+| **Development** | ![Build Status](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.github.com%2Frepos%2Fparsitects%2Ficsnpp-enip%2Fcommits%2Fmain%2Fstatus&query=state&label=build) | ![Last Build](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.github.com%2Frepos%2Fparsitects%2Ficsnpp-enip%2Fcommits%2Fmain%2Fstatus&query=statuses[0].updated_at&label=last%20build&color=lightgrey) |
+
 # ICSNPP-ENIP
 
 Industrial Control Systems Network Protocol Parsers (ICSNPP) - Ethernet/IP and CIP.
@@ -80,13 +87,56 @@ tar xvzf build/Zeek_Enip.tgz -C $ZEEK_PLUGIN_PATH
 
 ## Logging Capabilities
 
-It its default configuration, this parser will only log Ethernet/IP and CIP packets on ports 2222 and 44818. This decision was made due to the false positives generated when a signature-only based detection system was used.
+In its default configuration, this parser processes Ethernet/IP and CIP traffic on UDP port 2222 and TCP/UDP port 44818. Zeek assigns traffic on these configured ports directly to the appropriate ENIP analyzer.
 
-If users know of Ethernet/IP and CIP traffic that operate on ports other than 2222 or 44818, there are two options:
-* Allow signature detection on additional, known ports only:
-  * In [scripts/icsnpp/enip/dpd.sig](scripts/icsnpp/enip/dpd.sig): add the known Ethernet/IP and CIP port numbers to the lines: `dst-port == 2222, 44818`
-* Allow signature detection on all ports (may produce false positive):
-  * In [scripts/icsnpp/enip/dpd.sig](scripts/icsnpp/enip/dpd.sig): replace the lines: `dst-port == 2222, 44818` with `dst-port >= 1024`
+### Configuring a Non-Standard Port
+
+Some deployments run Ethernet/IP on a non-standard port. To configure one, update the port sets in [scripts/icsnpp/enip/main.zeek](scripts/icsnpp/enip/main.zeek).
+
+For ENIP over TCP, add the custom port to both `ports` and `tcp_ports`. For example, to process ENIP on TCP port 12345:
+
+```zeek
+const ports = {
+    2222/udp,
+    12345/tcp,
+    44818/tcp,
+    44818/udp,
+};
+
+const tcp_ports = {
+    12345/tcp,
+    44818/tcp,
+};
+```
+
+For ENIP over UDP, add the custom port to both `ports` and `udp_ports`:
+
+```zeek
+const ports = {
+    2222/udp,
+    12345/udp,
+    44818/tcp,
+    44818/udp,
+};
+
+const udp_ports = {
+    2222/udp,
+    12345/udp,
+    44818/udp,
+};
+```
+
+The `ports` set adds the port to Zeek's `likely_server_ports`, which helps Zeek determine the client and server when the beginning of a connection is missing. The transport-specific `tcp_ports` or `udp_ports` set assigns traffic on the port to the corresponding ENIP analyzer. Adding a port only to `ports` does not enable ENIP parsing.
+
+Only add a custom UDP port to `udp_implicit_ports` when that port carries implicit CIP I/O traffic.
+
+Configured ports should be dedicated to Ethernet/IP. Because the analyzer is assigned by port, non-ENIP traffic using a configured port may cause protocol violations or misleading results. After changing the sets, deploy the updated `main.zeek` file and restart Zeek. A C++ plugin rebuild is not required for this script-only change. Package upgrades may overwrite local package modifications, so preserve and reapply the configuration as part of the deployment process.
+
+#### Signature Detection
+
+The plugin uses both port-based analyzer registration in `main.zeek` and payload signatures in [scripts/icsnpp/enip/dpd.sig](scripts/icsnpp/enip/dpd.sig). Adding a custom port to the sets described above enables port-based detection.
+
+To also include the custom port in signature detection, add it to the `dst-port` list in `dpd_enip_tcp` for TCP. For UDP, add it to the `dst-port` list in `dpd_enip_udp_client_to_server` and the `src-port` list in `dpd_enip_udp_server_to_client`.
 
 ### ENIP Header Log (enip.log)
 
@@ -119,7 +169,9 @@ This log captures Ethernet/IP header information for every Ethernet/IP packet an
 
 #### Overview
 
-This log captures CIP header information for every CIP packet and logs it to **cip.log**.
+This log captures CIP header information for every CIP packet and logs it to **cip.log**. Identical
+services nested in the same Multiple Service Packet are written once, with their total recorded in
+`occurrence_count`.
 
 #### Fields Captured
 
@@ -146,6 +198,7 @@ This log captures CIP header information for every CIP packet and logs it to **c
 | class_name                | string    | CIP request path - class name                                 |
 | instance_id               | string    | CIP request path - instance ID                                |
 | attribute_id              | string    | CIP request path - attribute ID                               |
+| occurrence_count          | count     | Number of identical CIP records in the same packet            |
 
 ### CIP I/O Log (cip_io.log)
 
@@ -203,6 +256,45 @@ This log captures important variables for CIP_Identity objects and logs them to 
 | serial_number         | string    | Serial number of device                                       |
 | product_name          | string    | Human readable description of device                          |
 | device_state          | string    | Current state of the device                                   |
+
+### ENIP/CIP Logging Detail for Specific Command and Service Codes
+The following table summarizes logging coverage for specific EtherNet/IP encapsulation commands and CIP service codes.
+
+| Protocol | Function                  | Logging Detail       |
+| -------- | ------------------------- | -------------------- |
+| CIP      | Get Attributes All        | Logged - Header Only |
+| CIP      | Set Attributes All        | Logged - Header Only |
+| CIP      | Get Attribute List        | Logged - Header Only |
+| CIP      | Set Attribute List        | Logged - Header Only |
+| CIP      | Reset                     | Logged - Header Only |
+| CIP      | Start                     | Logged - Header Only |
+| CIP      | Stop                      | Logged - Header Only |
+| CIP      | Create                    | Logged - Header Only |
+| CIP      | Delete                    | Logged - Header Only |
+| CIP      | Multiple Service Packet   | Logged - Header Only |
+| CIP      | Apply Attributes          | Logged - Header Only |
+| CIP      | Get Attribute Single      | Logged - Header Only |
+| CIP      | Set Attribute Single      | Logged - Header Only |
+| CIP      | Find Next Object Instance | Logged - Header Only |
+| CIP      | Restore                   | Logged - Header Only |
+| CIP      | Save                      | Logged - Header Only |
+| CIP      | Get Member                | Logged - Header Only |
+| CIP      | Set Member                | Logged - Header Only |
+| CIP      | Insert Member             | Logged - Header Only |
+| CIP      | Remove Member             | Logged - Header Only |
+| CIP      | Group Sync                | Logged - Header Only |
+| ENIP     | NOP                       | Logged - Header Only |
+| ENIP     | List Services             | Logged - Header Only |
+| ENIP     | List Identity             | Logged - Full        |
+| ENIP     | List Interfaces           | Logged - Header Only |
+| ENIP     | Register Session          | Logged - Header Only |
+| ENIP     | Unregister Session        | Logged - Header Only |
+| ENIP     | Send RR Data              | Logged - Header Only |
+| ENIP     | Send Unit Data            | Logged - Header Only |
+| ENIP     | Start DTLS                | Logged - Header Only |
+| ENIP     | Indicate Status           | Logged - Header Only |
+| ENIP     | Cancel                    | Logged - Header Only |
+
 
 ### Source and Destination Fields
 
@@ -262,7 +354,7 @@ The general log files for Ethernet/IP (enip.log) and CIP (cip.log) contain basic
 
 ### Detailed Logging
 
-Detailed logging for 1 Ethernet/IP command is logged in the CIP identity log file (cip_identity.log). The other 9 Ethernet/IP commands do not contain detailed logging, therefore 10% (1/10) of the Ethernet/IP commands contain detailed logging.
+Detailed logging for 1 Ethernet/IP command is logged in the CIP identity log file (cip_identity.log). The other 10 Ethernet/IP commands do not contain detailed logging, therefore ~9% (1/11) of the Ethernet/IP commands contain detailed logging.
 
 There is currently no (0%) detailed logging for regular CIP services outside of the CIP general/header log file (cip.log).
 

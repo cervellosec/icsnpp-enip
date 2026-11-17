@@ -17,6 +17,9 @@
 
 #include "enip_pac.h"
 
+#include <cstdint>
+#include <vector>
+
 namespace zeek::analyzer::enip {
   class ENIP_TCP_Analyzer : public analyzer::tcp::TCP_ApplicationAnalyzer
   {
@@ -38,6 +41,16 @@ namespace zeek::analyzer::enip {
       protected:
           binpac::ENIP::ENIP_Conn* interp;
           bool had_gap;
+
+          // Reassembly buffers for length-prefixed ENIP-over-TCP framing.
+          // Zeek reassembles the TCP stream, but a single encapsulation PDU
+          // can still span multiple DeliverStream calls (or several PDUs can be
+          // pipelined into one). We accumulate per direction and hand the
+          // (datagram) parser only complete PDUs. See DeliverStream.
+          std::vector<u_char> orig_buffer;
+          std::vector<u_char> resp_buffer;
+
+          void ProcessTCPData(std::vector<u_char>& buffer, bool orig);
   };
 
   class ENIP_UDP_Analyzer : public analyzer::Analyzer
