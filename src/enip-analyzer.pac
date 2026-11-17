@@ -37,6 +37,9 @@
 %code{
 
     // Get uint32 number from status_extended array
+    // Cervello: the extended status is an array of little-endian 16-bit words; the first word is
+    // the code Wireshark shows (e.g. 0x0107 "Connection not found"). Up to two words are packed,
+    // first word in the high half.
     uint32 get_unsigned(const_bytestring data)
     {
         if(data.length() == 0)
@@ -44,27 +47,28 @@
             return UINT32_MAX;
         }
         uint32 number = 0;
-        for ( int32 i = 0; i < data.length(); ++i ){
-            number <<= 8;
-            number |= data[i];
-
-            if ( i == 3 )
-                return number;
+        for ( int32 i = 0; i + 1 < data.length() && i < 4; i += 2 ){
+            number <<= 16;
+            number |= data[i] | (data[i+1] << 8);
         }
         return number;
     }
 
     // Get uint32 number from data in request path
+    // Cervello: bounds-checked, UINT32_MAX when the value does not fit in `data` (a truncated
+    // or malformed path), and the 32-bit case shifts by 16, not 13.
     uint32 get_number(uint8 size, uint16 x, const_bytestring data)
     {
+        int width = size == 0 ? 1 : size == 1 ? 2 : size == 2 ? 4 : 0;
+        if(width == 0 || x + width > data.length())
+            return UINT32_MAX;
+
         if(size == 0)
             return data[x];
         else if (size == 1)
             return (data[x+1] << 8) | data[x];
-        else if (size == 2)
-            return (data[x+3] << 24) | (data[x+2] << 13) | (data[x+1] << 8) | data[x];
-
-        return UINT32_MAX;
+        else
+            return (data[x+3] << 24) | (data[x+2] << 16) | (data[x+1] << 8) | data[x];
     }
 
     // Parse request path and return CIP_Request_Path struct
@@ -85,6 +89,7 @@
                 if(size > 0)
                     x += 1;
 
+                // Cervello: get_number returns UINT32_MAX when the value runs past the path.
                 if(choice == 0)
                     request_path.class_id = get_number(size, x, data);
                 else if(choice == 1)
@@ -112,8 +117,15 @@
     {
         CIP_Request_Path request_path;
 
+        // Cervello: the path size byte must be inside `data`, and the path it announces is
+        // clamped to `data`, so a malformed item cannot be read past the end.
+        if(starting_location >= data.length())
+            return request_path;
+
         uint16 x = starting_location;
         uint16 data_length = starting_location + (data[x] * 2) + 1;
+        if(data_length > data.length())
+            data_length = data.length();
         x += 1;
 
         while( (x + 1) < data_length )
@@ -126,12 +138,15 @@
                 if(size > 0)
                     x += 1;
 
+                // Cervello: bounded by the path, not by `data`, so a value cannot be read from
+                // the item's service data or the next item.
+                const_bytestring path(data.begin(), data.begin() + data_length);
                 if(choice == 0)
-                    request_path.class_id = get_number(size, x, data);
+                    request_path.class_id = get_number(size, x, path);
                 else if(choice == 1)
-                    request_path.instance_id = get_number(size, x, data);
+                    request_path.instance_id = get_number(size, x, path);
                 else if(choice == 4)
-                    request_path.attribute_id = get_number(size, x, data);
+                    request_path.attribute_id = get_number(size, x, path);
 
                 if(size == 0)
                     x += 1;
@@ -150,6 +165,30 @@
     }
 
 %}
+
+## Cervello: Connection Manager Forward_Open / Large_Forward_Open requests awaiting their reply.
+## Their reply's service code (0xD4 / 0xDB) is shared with other classes' services, so only a
+## reply to one of these is decoded as a Forward_Open reply.
+refine connection ENIP_Conn += {
+    %member{
+        uint32 pending_forward_opens_ = 0;
+    %}
+
+    function note_forward_open_request(): bool
+        %{
+        ++pending_forward_opens_;
+        return true;
+        %}
+
+    function take_forward_open_request(): bool
+        %{
+        if ( pending_forward_opens_ == 0 )
+            return false;
+
+        --pending_forward_opens_;
+        return true;
+        %}
+};
 
 refine flow ENIP_Flow += {
 
@@ -179,6 +218,13 @@ refine flow ENIP_Flow += {
     ###############################################################################################
     function process_cip_header(cip_header: CIP_Header): bool
         %{
+            // Cervello: remember a Connection Manager Forward_Open request (see
+            // process_forward_open_response).
+            if ( ${cip_header.request_or_response} == 0 &&
+                 (${cip_header.service_code} == 0x54 || ${cip_header.service_code} == 0x5B) &&
+                 parse_request_path(${cip_header.request_path.request_path}).class_id == 0x06 )
+                connection()->note_forward_open_request();
+
             if ( ::cip_header )
             {
                 // MULTIPLE_SERVICE CIP header data is parsed in process_multiple_service_request 
@@ -493,10 +539,94 @@ refine flow ENIP_Flow += {
         %}
 
     ###############################################################################################
+    ##########  Cervello: one event per item of a Multiple Service Packet, in packet order  ########
+    ###############################################################################################
+    ## The cip_header events for the items are aggregated by service and path (requests) or service
+    ## and status (responses), which loses the order a reply item is matched to its request by: item
+    ## i of the reply answers item i of the request. These keep the order and hand out the reply
+    ## data. Item i spans services[offset_i - header : offset_i+1 - header), header being the count
+    ## and offset list. Raised only when a handler exists.
+    function emit_multiple_service_request_items(data: Multiple_Service_Packet_Request): bool
+        %{
+            if ( ! ::multiple_service_request_item )
+                return true;
+
+            const_bytestring services = ${data.services};
+            uint16 service_count = ${data.service_count};
+            int header_size = 2 * service_count + 2;
+
+            for ( uint16 i = 0; i < service_count; i++ )
+            {
+                int start = ${data.service_offsets[i]} - header_size;
+                int end = (i + 1 < service_count) ? ${data.service_offsets[i + 1]} - header_size : services.length();
+                // Request item: service, path size, path, data. Offsets must be increasing.
+                if ( start < 0 || start + 2 > end || end > services.length() )
+                    break;
+
+                uint8 service_code = services[start] & 0x7f;
+                // The path is parsed within this item only, so a malformed path size cannot read
+                // the next item's bytes as this one's class, instance or attribute.
+                CIP_Request_Path path = parse_request_multiple_service_packet(
+                    const_bytestring(services.begin(), services.begin() + end), start + 1);
+
+                zeek::BifEvent::enqueue_multiple_service_request_item(connection()->zeek_analyzer(),
+                                                                      connection()->zeek_analyzer()->Conn(),
+                                                                      ${data.is_originator},
+                                                                      zeek::make_intrusive<zeek::StringVal>(${data.packet_correlation_id}),
+                                                                      ${data.cip_sequence_count},
+                                                                      i,
+                                                                      service_code,
+                                                                      path.class_id,
+                                                                      path.instance_id,
+                                                                      path.attribute_id);
+            }
+            return true;
+        %}
+
+    function emit_multiple_service_response_items(data: Multiple_Service_Packet_Response): bool
+        %{
+            if ( ! ::multiple_service_response_item )
+                return true;
+
+            const_bytestring services = ${data.services};
+            uint16 service_count = ${data.service_count};
+            int header_size = 2 * service_count + 2;
+
+            for ( uint16 i = 0; i < service_count; i++ )
+            {
+                int start = ${data.service_offsets[i]} - header_size;
+                int end = (i + 1 < service_count) ? ${data.service_offsets[i + 1]} - header_size : services.length();
+                // Reply item: service, reserved, general status, additional status size (in
+                // words), additional status, data. Offsets must be increasing.
+                if ( start < 0 || start + 4 > end || end > services.length() )
+                    break;
+
+                uint8 service_code = services[start] & 0x7f;
+                uint8 status = services[start + 2];
+                int data_start = start + 4 + 2 * services[start + 3];
+                if ( data_start > end )
+                    break;
+
+                zeek::BifEvent::enqueue_multiple_service_response_item(connection()->zeek_analyzer(),
+                                                                       connection()->zeek_analyzer()->Conn(),
+                                                                       ${data.is_originator},
+                                                                       zeek::make_intrusive<zeek::StringVal>(${data.packet_correlation_id}),
+                                                                       ${data.cip_sequence_count},
+                                                                       i,
+                                                                       service_code,
+                                                                       status,
+                                                                       to_stringval(const_bytestring(services.begin() + data_start, services.begin() + end)));
+            }
+            return true;
+        %}
+
+    ###############################################################################################
     ######################  Process data for multiple_service_request event  ######################
     ###############################################################################################
     function process_multiple_service_request(data: Multiple_Service_Packet_Request): bool
         %{
+            emit_multiple_service_request_items(data);  // Cervello
+
             if ( ::cip_header )
             {
                 uint16 service_packet_location;
@@ -534,7 +664,11 @@ refine flow ENIP_Flow += {
                 string service_list = "";
                 for(uint8 i=0; i < service_count;i++)
                 {
-                    service_packet_location = ${data.service_offsets[i]} - (2*service_count) - 2;
+                    // Cervello: an offset before the item list or past the data is malformed.
+                    int location = ${data.service_offsets[i]} - (2*service_count) - 2;
+                    if ( location < 0 || location + 1 >= ${data.services}.length() )
+                        break;
+                    service_packet_location = location;
                     uint8 service_code = ${data.services[service_packet_location]} & 0x7f;
 
                     // append to list
@@ -543,7 +677,17 @@ refine flow ENIP_Flow += {
                     else
                         service_list += zeek::util::fmt(",%d", service_code);
 
-                    request_path = parse_request_multiple_service_packet(${data.services},service_packet_location+1);
+                    // Cervello: parse the path within this item only (it ends at the next offset).
+                    int item_end = ${data.services}.length();
+                    if ( i + 1 < service_count )
+                    {
+                        int next = ${data.service_offsets[i + 1]} - (2*service_count) - 2;
+                        if ( next > location && next < item_end )
+                            item_end = next;
+                    }
+                    request_path = parse_request_multiple_service_packet(
+                        const_bytestring(${data.services}.begin(), ${data.services}.begin() + item_end),
+                        service_packet_location+1);
                     Request_Key key = std::make_tuple(service_code,
                                                       request_path.class_id,
                                                       request_path.instance_id,
@@ -598,6 +742,8 @@ refine flow ENIP_Flow += {
     ###############################################################################################
     function process_multiple_service_response(data: Multiple_Service_Packet_Response): bool
         %{
+            emit_multiple_service_response_items(data);  // Cervello
+
             if ( ::cip_header )
             {
                 CIP_Request_Path request_path;
@@ -635,7 +781,11 @@ refine flow ENIP_Flow += {
                 string service_list = "";
                 for(uint8 i=0; i < service_count;i++)
                 {
-                    service_packet_location = ${data.service_offsets[i]} - (2*service_count) - 2;
+                    // Cervello: an offset before the item list or past the status byte is malformed.
+                    int location = ${data.service_offsets[i]} - (2*service_count) - 2;
+                    if ( location < 0 || location + 2 >= ${data.services}.length() )
+                        break;
+                    service_packet_location = location;
                     uint8 service_code = ${data.services[service_packet_location]} & 0x7f;
 
                     // append to list
@@ -717,6 +867,36 @@ refine flow ENIP_Flow += {
                                                                      ${data.is_originator},
                                                                      to_stringval(${data.attribute_data}));
             }
+            return true;
+        %}
+
+    ###############################################################################################
+    ##############  Cervello: process data for forward_open_response event  #######################
+    ###############################################################################################
+    function process_forward_open_response(data: Forward_Open_Response): bool
+        %{
+            // Every reply to 0x54 / 0x5B takes one pending Connection Manager request, decoded
+            // or not, so a failed reply does not leave its request pending.
+            if ( ! connection()->take_forward_open_request() )
+                return true;
+
+            // A successful reply's fixed part is 26 bytes (see Forward_Open_Response).
+            const_bytestring reply = ${data.reply};
+            if ( ${data.status} != 0 || reply.length() < 26 || ! ::forward_open_response )
+                return true;
+
+            auto u16 = [&](int o) -> uint32 { return reply[o] | (reply[o + 1] << 8); };
+            auto u32 = [&](int o) -> uint32 { return u16(o) | (u16(o + 2) << 16); };
+
+            zeek::BifEvent::enqueue_forward_open_response(connection()->zeek_analyzer(),
+                                                          connection()->zeek_analyzer()->Conn(),
+                                                          ${data.is_originator},
+                                                          zeek::make_intrusive<zeek::StringVal>(${data.packet_correlation_id}),
+                                                          u32(0),     // O->T connection ID
+                                                          u32(4),     // T->O connection ID
+                                                          u16(8),     // connection serial
+                                                          u16(10),    // originator vendor ID
+                                                          u32(12));   // originator serial
             return true;
         %}
 };
