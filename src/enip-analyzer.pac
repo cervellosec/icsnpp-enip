@@ -192,6 +192,12 @@ refine connection ENIP_Conn += {
 
 refine flow ENIP_Flow += {
 
+    # Cervello: set while the message inside an Unconnected Send is parsed (see
+    # process_unconnected_send), so that a nested one is not opened in turn.
+    %member{
+        bool in_unconnected_send_ = false;
+    %}
+
     ###############################################################################################
     ############################  Process data for enip_header event  #############################
     ###############################################################################################
@@ -260,6 +266,51 @@ refine flow ENIP_Flow += {
                                                    request_path.attribute_id,
                                                    1);
             }
+
+            // Cervello: the message an Unconnected Send routes, after the Unconnected Send's
+            // own cip_header. 0x52 is class-specific (Read Tag Fragmented elsewhere).
+            if ( ${cip_header.request_or_response} == 0 && ${cip_header.service_code} == 0x52 &&
+                 parse_request_path(${cip_header.request_path.request_path}).class_id == 0x06 )
+                process_unconnected_send(cip_header);
+
+            return true;
+        %}
+
+    ###############################################################################################
+    ##########  Cervello: parse the message inside an Unconnected Send request  ###################
+    ###############################################################################################
+    function process_unconnected_send(cip_header: CIP_Header): bool
+        %{
+            // Unconnected Send (CIP Vol.1 3-5.5.3) is how a client reaches a module behind the
+            // one it talks to: priority/tick (1), timeout ticks (1), message size (2), the
+            // message, a pad byte when the size is odd, then the route path. The reply comes
+            // back unwrapped, as the reply of the message. The message is a whole CIP request,
+            // so it is parsed as one and raises the events any request does. It cannot break the
+            // packet around it: a size that does not fit is left alone, and a message that does
+            // not parse is dropped.
+            const_bytestring body = ${cip_header.other};
+            if ( in_unconnected_send_ || body.length() < 4 )
+                return true;
+
+            int message_size = body[2] | (body[3] << 8);
+            if ( message_size < 2 || 4 + message_size > body.length() )
+                return true;
+
+            in_unconnected_send_ = true;
+            CIP_Header* message = new CIP_Header(${cip_header.is_originator},
+                                                 ${cip_header.cip_sequence_count},
+                                                 ${cip_header.packet_correlation_id});
+            try
+            {
+                ContextENIP context(connection(), this);
+                message->Parse(body.begin() + 4, body.begin() + 4 + message_size, &context);
+            }
+            catch ( const binpac::Exception& )
+            {
+            }
+            delete message;
+            in_unconnected_send_ = false;
+
             return true;
         %}
 
